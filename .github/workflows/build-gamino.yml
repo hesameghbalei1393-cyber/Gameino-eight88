@@ -1,0 +1,140 @@
+name: Build Gamino Release APK
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      APP_ID: com.eight8.gamino
+      APP_NAME: Gamino
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Setup Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Prepare web app
+        run: |
+          mkdir -p www
+          cp index.html www/index.html
+          cp manifest.json www/manifest.json
+          cp sw.js www/sw.js
+          cp icon-192.png www/icon-192.png
+          cp icon-512.png www/icon-512.png
+          cp icon-maskable-512.png www/icon-maskable-512.png
+
+      - name: Install Capacitor
+        run: |
+          npm init -y
+          npm install @capacitor/core@7 @capacitor/cli@7 @capacitor/android@7
+
+      - name: Create Android project
+        run: |
+          npx cap init "$APP_NAME" "$APP_ID" --web-dir www
+          npx cap add android
+          npx cap sync android
+          sed -i "s/versionCode [0-9]*/versionCode ${{ github.run_number }}/" android/app/build.gradle
+          sed -i 's/versionName "[^"]*"/versionName "1.0.${{ github.run_number }}"/' android/app/build.gradle
+
+      - name: Check signing password
+        env:
+          SIGNING_PASSWORD: ${{ secrets.SIGNING_PASSWORD }}
+        run: |
+          if [ -z "$SIGNING_PASSWORD" ]; then
+            echo "SIGNING_PASSWORD secret is missing."
+            exit 1
+          fi
+
+      - name: Prepare signing key
+        env:
+          SIGNING_PASSWORD: ${{ secrets.SIGNING_PASSWORD }}
+        run: |
+          mkdir -p signing
+
+          if [ -f signing/release.jks.enc ]; then
+            openssl enc -d -aes-256-cbc -pbkdf2 \
+              -pass pass:"$SIGNING_PASSWORD" \
+              -in signing/release.jks.enc \
+              -out signing/release.jks
+          else
+            keytool -genkeypair \
+              -alias gamino \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 10000 \
+              -storetype PKCS12 \
+              -keystore signing/release.jks \
+              -storepass "$SIGNING_PASSWORD" \
+              -keypass "$SIGNING_PASSWORD" \
+              -dname "CN=Gamino, OU=Gamino, O=Eight8, L=Unknown, ST=Unknown, C=IR"
+
+            openssl enc -aes-256-cbc -pbkdf2 \
+              -pass pass:"$SIGNING_PASSWORD" \
+              -in signing/release.jks \
+              -out signing/release.jks.enc
+
+            rm signing/release.jks
+
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+            git add signing/release.jks.enc
+            git commit -m "Store encrypted Gamino release signing key" || true
+            git push || true
+          fi
+
+      - name: Build release APK
+        env:
+          SIGNING_PASSWORD: ${{ secrets.SIGNING_PASSWORD }}
+        run: |
+          cd android
+          ./gradlew assembleRelease
+          cd ..
+
+          mkdir -p output
+
+          cp android/app/build/outputs/apk/release/app-release-unsigned.apk output/Gamino-unsigned.apk
+
+          BUILD_TOOLS=$ANDROID_HOME/build-tools/$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -1)
+
+          $BUILD_TOOLS/zipalign -f 4 \
+            output/Gamino-unsigned.apk \
+            output/Gamino-aligned.apk
+
+          $BUILD_TOOLS/apksigner sign \
+            --ks signing/release.jks \
+            --ks-key-alias gamino \
+            --ks-pass pass:"$SIGNING_PASSWORD" \
+            --key-pass pass:"$SIGNING_PASSWORD" \
+            --out output/Gamino-release.apk \
+            output/Gamino-aligned.apk
+
+          $BUILD_TOOLS/apksigner verify --verbose output/Gamino-release.apk
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Gamino-release-apk
+          path: output/Gamino-release.apk
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: gamino-v1.0.${{ github.run_number }}
+          name: Gamino v1.0.${{ github.run_number }}
+          files: output/Gamino-release.apk
