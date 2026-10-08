@@ -88,7 +88,7 @@ jobs:
               -in signing/release.jks \
               -out signing/release.jks.enc
 
-            rm signing/release.jks
+            
 
             git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
