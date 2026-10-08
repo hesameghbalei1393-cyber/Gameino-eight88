@@ -1,4 +1,4 @@
-name: Build Gamino Release APK
+name: Build Gameino Release APK
 
 on:
   workflow_dispatch:
@@ -9,9 +9,10 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+
     env:
       APP_ID: com.eight8.gamino
-      APP_NAME: Gamino
+      APP_NAME: Gameino
 
     steps:
       - name: Checkout
@@ -31,9 +32,11 @@ jobs:
       - name: Prepare web app
         run: |
           mkdir -p www
+
           cp index.html www/index.html
           cp manifest.json www/manifest.json
           cp sw.js www/sw.js
+
           cp icon-192.png www/icon-192.png
           cp icon-512.png www/icon-512.png
           cp icon-maskable-512.png www/icon-maskable-512.png
@@ -48,8 +51,71 @@ jobs:
           npx cap init "$APP_NAME" "$APP_ID" --web-dir www
           npx cap add android
           npx cap sync android
-          sed -i "s/versionCode [0-9]*/versionCode ${{ github.run_number }}/" android/app/build.gradle
-          sed -i 's/versionName "[^"]*"/versionName "1.0.${{ github.run_number }}"/' android/app/build.gradle
+
+      - name: Set app name
+        run: |
+          sed -i 's/<string name="app_name">.*<\/string>/<string name="app_name">Gameino<\/string>/' \
+            android/app/src/main/res/values/strings.xml
+
+      - name: Prepare Android launcher icon
+        run: |
+          python3 -m pip install --quiet Pillow
+
+          python3 <<'PY'
+          from PIL import Image
+          import os
+
+          source = "icon-512.png"
+          img = Image.open(source).convert("RGBA")
+
+          sizes = {
+              "mipmap-mdpi": 48,
+              "mipmap-hdpi": 72,
+              "mipmap-xhdpi": 96,
+              "mipmap-xxhdpi": 144,
+              "mipmap-xxxhdpi": 192
+          }
+
+          res = "android/app/src/main/res"
+
+          for folder, size in sizes.items():
+              path = os.path.join(res, folder)
+              os.makedirs(path, exist_ok=True)
+
+              icon = img.resize((size, size), Image.Resampling.LANCZOS)
+
+              icon.save(os.path.join(path, "ic_launcher.png"))
+              icon.save(os.path.join(path, "ic_launcher_round.png"))
+
+          # Remove adaptive icon XML files so Android uses our PNG icon
+          for folder in [
+              "mipmap-anydpi",
+              "mipmap-anydpi-v26",
+              "mipmap-anydpi-v31"
+          ]:
+              path = os.path.join(res, folder)
+
+              if os.path.exists(path):
+                  for filename in [
+                      "ic_launcher.xml",
+                      "ic_launcher_round.xml"
+                  ]:
+                      file_path = os.path.join(path, filename)
+
+                      if os.path.exists(file_path):
+                          os.remove(file_path)
+          PY
+
+      - name: Set version
+        run: |
+          VERSION_CODE=${{ github.run_number }}
+          VERSION_NAME="1.0.${{ github.run_number }}"
+
+          sed -i "s/versionCode [0-9]*/versionCode $VERSION_CODE/" \
+            android/app/build.gradle
+
+          sed -i "s/versionName \"[^\"]*\"/versionName \"$VERSION_NAME\"/" \
+            android/app/build.gradle
 
       - name: Check signing password
         env:
@@ -67,11 +133,14 @@ jobs:
           mkdir -p signing
 
           if [ -f signing/release.jks.enc ]; then
+
             openssl enc -d -aes-256-cbc -pbkdf2 \
               -pass pass:"$SIGNING_PASSWORD" \
               -in signing/release.jks.enc \
               -out signing/release.jks
+
           else
+
             keytool -genkeypair \
               -alias gamino \
               -keyalg RSA \
@@ -81,21 +150,20 @@ jobs:
               -keystore signing/release.jks \
               -storepass "$SIGNING_PASSWORD" \
               -keypass "$SIGNING_PASSWORD" \
-              -dname "CN=Gamino, OU=Gamino, O=Eight8, L=Unknown, ST=Unknown, C=IR"
+              -dname "CN=Gameino, OU=Gameino, O=Eight8, L=Unknown, ST=Unknown, C=IR"
 
             openssl enc -aes-256-cbc -pbkdf2 \
               -pass pass:"$SIGNING_PASSWORD" \
               -in signing/release.jks \
               -out signing/release.jks.enc
 
-            
-
             git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
             git add signing/release.jks.enc
-            git commit -m "Store encrypted Gamino release signing key" || true
+            git commit -m "Store encrypted Gameino signing key" || true
             git push || true
+
           fi
 
       - name: Build release APK
@@ -108,33 +176,36 @@ jobs:
 
           mkdir -p output
 
-          cp android/app/build/outputs/apk/release/app-release-unsigned.apk output/Gamino-unsigned.apk
+          cp android/app/build/outputs/apk/release/app-release-unsigned.apk \
+            output/Gameino-unsigned.apk
 
-          BUILD_TOOLS=$ANDROID_HOME/build-tools/$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -1)
+          BUILD_TOOLS="$ANDROID_HOME/build-tools/$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -1)"
 
-          $BUILD_TOOLS/zipalign -f 4 \
-            output/Gamino-unsigned.apk \
-            output/Gamino-aligned.apk
+          "$BUILD_TOOLS/zipalign" -f 4 \
+            output/Gameino-unsigned.apk \
+            output/Gameino-aligned.apk
 
-          $BUILD_TOOLS/apksigner sign \
+          "$BUILD_TOOLS/apksigner" sign \
             --ks signing/release.jks \
             --ks-key-alias gamino \
             --ks-pass pass:"$SIGNING_PASSWORD" \
             --key-pass pass:"$SIGNING_PASSWORD" \
-            --out output/Gamino-release.apk \
-            output/Gamino-aligned.apk
+            --out output/Gameino-release.apk \
+            output/Gameino-aligned.apk
 
-          $BUILD_TOOLS/apksigner verify --verbose output/Gamino-release.apk
+          "$BUILD_TOOLS/apksigner" verify \
+            --verbose \
+            output/Gameino-release.apk
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: Gamino-release-apk
-          path: output/Gamino-release.apk
+          name: Gameino-release-apk
+          path: output/Gameino-release.apk
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: gamino-v1.0.${{ github.run_number }}
-          name: Gamino v1.0.${{ github.run_number }}
-          files: output/Gamino-release.apk
+          tag_name: gameino-v1.0.${{ github.run_number }}
+          name: Gameino v1.0.${{ github.run_number }}
+          files: output/Gameino-release.apk
